@@ -10,6 +10,7 @@ using Printf
 
 const AVOGADRO = 6.02214076e23
 const MW_NO_KG_PER_MOL = 30.006e-3
+const MW_CO_KG_PER_MOL = 28.01e-3
 const DEFAULT_MIXING_DEPTH_M = 1000.0
 const KM_PER_DEG_LAT = 111.32
 
@@ -337,8 +338,8 @@ end
 """
 Convert NO emissions from kg/m^2/s to mol/m^3/s for a 2D mixed-layer model.
 """
-function emissions_no_to_tendency_molm3s(emis_kgm2s; mixing_depth_m=DEFAULT_MIXING_DEPTH_M)
-    return emis_kgm2s / MW_NO_KG_PER_MOL / mixing_depth_m
+function emissions_to_tendency_molm3s(emis_kgm2s, molar_mass; mixing_depth_m=DEFAULT_MIXING_DEPTH_M)
+    return emis_kgm2s / molar_mass / mixing_depth_m
 end
 
 """
@@ -346,8 +347,9 @@ Apply hourly emissions controls (piecewise-constant in UTC hour bin) for NO only
 
 alpha has size (nx, ny, 24) for v1.
 baseline_no has size (nx, ny, 24) in kg/m^2/s.
+baseline_co has size (nx, ny, 24) in kg/m^2/s.
 """
-function apply_emissions_no!(state, baseline_no, alpha, dt_sec, utc_hour; mixing_depth_m=DEFAULT_MIXING_DEPTH_M)
+function apply_emissions!(state, baseline_no, baseline_co, alpha, dt_sec, utc_hour; mixing_depth_m=DEFAULT_MIXING_DEPTH_M)
     h = utc_hour + 1
     no_idx = SIDX[:NO]
 
@@ -359,9 +361,8 @@ function apply_emissions_no!(state, baseline_no, alpha, dt_sec, utc_hour; mixing
 
     for j in axes(state, 2)
         for i in axes(state, 1)
-            e_eff = alpha[i, j, h] * baseline_no[i, j, h]
-            sdot = emissions_no_to_tendency_molm3s(e_eff; mixing_depth_m=mixing_depth_m)
-            state[i, j, no_idx] += dt_sec * sdot
+            state[i, j, SIDX[:NO]] += dt_sec * emissions_to_tendency_molm3s(baseline_no[i, j, h] * alpha[i, j, h], MW_NO_KG_PER_MOL; mixing_depth_m=mixing_depth_m)
+            state[i, j, SIDX[:CO]] += dt_sec * emissions_to_tendency_molm3s(baseline_co[i, j, h] * alpha[i, j, h], MW_CO_KG_PER_MOL; mixing_depth_m=mixing_depth_m)
         end
     end
 
@@ -1061,29 +1062,39 @@ Keyword options:
 - lon_field, lat_field: optional precomputed model lon/lat arrays
 
 """
-function load_no_emissions_hourly!(baseline_no_hourly, grid::Grid2D, path_ceds::AbstractString; month_index=1, lon_field=nothing, lat_field=nothing)
+function load_emissions_hourly!(baseline_no_hourly, baselin_co_hourly, grid::Grid2D, path_no::AbstractString, path_co::AbstractString; month_index=1, lon_field=nothing, lat_field=nothing)
     if lon_field === nothing || lat_field === nothing
         lon_field, lat_field = build_lonlat_fields(grid)
     end
 
-    ds = NCDataset(path_ceds)
-    try
-        lon_src = ds["lon"][:]
-        lat_src = ds["lat"][:]
-
-        nmonth = size(ds["NO_tra"], 3)
-        m = clamp(month_index, 1, nmonth)
-
-        no_src = ds["NO_tra"][:, :, m] .+ ds["NO_ene"][:, :, m] .+ ds["NO_ind"][:, :, m]
-
-        no_model = zeros(Float64, grid.nx, grid.ny)
-        _remap_to_model_grid!(no_model, no_src, lon_src, lat_src, lon_field, lat_field)
-
-        for h in 1:24
-            baseline_no_hourly[:, :, h] .= no_model
+    for path in (path_no, path_co)
+        if !isfile(path)
+            error("Emissions file not found: $path")
         end
-    finally
-        close(ds)
+    end
+    for (path, species, out_arr) in ((path_no, "NO", baseline_no_hourly), (path_co, "CO", baselin_co_hourly))
+        ds = NCDataset(path)
+        try
+            if !haskey(ds, "lon") || !haskey(ds, "lat") || !haskey(ds, "$(species)_tra") || !haskey(ds, "$(species)_ene") || !haskey(ds, "$(species)_ind")
+                error("Emissions file $path is missing required variables for $species")
+            end
+            lon_src = ds["lon"][:]
+            lat_src = ds["lat"][:]
+
+            nmonth = size(ds["$(species)_tra"], 3)
+            m = clamp(month_index, 1, nmonth)
+
+            emis_src = ds["$(species)_tra"][:, :, m] .+ ds["$(species)_ene"][:, :, m] .+ ds["$(species)_ind"][:, :, m]
+
+            emis_model = zeros(Float64, grid.nx, grid.ny)
+            _remap_to_model_grid!(emis_model, emis_src, lon_src, lat_src, lon_field, lat_field)
+
+            for h in 1:24
+                out_arr[:, :, h] .= emis_model
+            end
+        finally
+            close(ds)
+        end
     end
 
     return nothing
@@ -1126,13 +1137,9 @@ function save_state(path, state, t, lat_field, lon_field, air_mol_m3)
         #defDim(ds, "species", size(state, 3))
         defDim(ds, "time", 1)
 
-        #var_lon = defVar(ds, "lon", Float64, ("x",))
-        #var_lat = defVar(ds, "lat", Float64, ("y",))
         var_lon = defVar(ds, "lon", Float64, ("y","x"))
         var_lat = defVar(ds, "lat", Float64, ("y","x"))
         var_time = defVar(ds, "time", Float64, ("time",))
-        #var_state = defVar(ds, "state", Float64, ("lon", "lat", "species"))
-        #var_state[:, :, :] = state
 
         var_lon[:,:] = lon_field[:, :]'
         var_lat[:,:] = lat_field[:, :]'
@@ -1161,6 +1168,7 @@ function run_forward_day(; grid=make_grid(),
     config=default_config(),
     forcing_paths,
     ceds_no_path::AbstractString,
+    ceds_co_path::AbstractString,
     alpha_controls=nothing,
     wind_mode::Symbol=:raw_met,
     objective_species::Symbol=:O3,
@@ -1178,7 +1186,8 @@ function run_forward_day(; grid=make_grid(),
 
     # Load NO baseline monthly mean and apply hourly controls (unity by default).
     baseline_no_hourly = zeros(Float64, grid.nx, grid.ny, 24)
-    load_no_emissions_hourly!(baseline_no_hourly, grid, ceds_no_path; month_index=1, lon_field=lon_field, lat_field=lat_field)
+    baseline_co_hourly = zeros(Float64, grid.nx, grid.ny, 24)
+    load_emissions_hourly!(baseline_no_hourly, baseline_co_hourly, grid, ceds_no_path, ceds_co_path; month_index=1, lon_field=lon_field, lat_field=lat_field)
     alpha = if alpha_controls === nothing
         ones(Float64, grid.nx, grid.ny, 24)
     else
@@ -1215,7 +1224,7 @@ function run_forward_day(; grid=make_grid(),
         air_mol_m3 .= pressure ./ (GAS_CONSTANT * tfield)
 
         apply_transport_step!(state, u, v, grid, dt_loc, t, lat_field, lon_field; limiter=limiter, bc_mode=bc_mode)
-        apply_emissions_no!(state, baseline_no_hourly, alpha, dt_loc, Dates.hour(t); mixing_depth_m=config.mixing_depth_m)
+        apply_emissions!(state, baseline_no_hourly, baseline_co_hourly, alpha, dt_loc, Dates.hour(t); mixing_depth_m=config.mixing_depth_m)
         apply_chemistry!(state, dt_loc, t, tfield, lat_field, lon_field; nsub=chemistry_substeps, rel_change_limit=chemistry_rel_change_limit)
         accumulate_objective!(acc, state, objective_species, dt_loc, lat_field, lon_field, config.receptor_lat_deg, config.receptor_lon_deg)
 
