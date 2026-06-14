@@ -1,0 +1,71 @@
+description: Stewart-like toy NOx-Ox-VOC mechanism for CTM v1
+units:
+  length: cm
+  quantity: mol
+  activation-energy: J/mol
+phases:
+  - name: gas
+    thermo: ideal-gas
+    species:
+      - NO
+      - NO2
+      - O3
+      - OH
+      - HO2
+      - VOC
+      - RO2
+      - HCHO
+      - CO
+      - HNO3
+      - H2O2
+      - ROOH
+      - O2
+      - H2O
+      - CO2
+reactions:
+  - equation: NO2 => NO + O3
+    rate-constant: {A: 8.0e-3, b: 0.0, Ea: 0.0}
+    label: R1
+    type: photolysis
+  - equation: NO + O3 => NO2
+    rate-constant: {A: 3.0e-12, b: 0.0, Ea: 1500.0}
+    label: R2
+  - equation: O3 => 2 OH + O2
+    rate-constant: {A: 3.0e-6, b: 0.0, Ea: 0.0}
+    label: R3
+    type: photolysis
+  - equation: OH + NO2 => HNO3
+    rate-constant: {A: 1.1e-11, b: 0.0, Ea: 0.0}
+    label: R4
+  - equation: HO2 + HO2 => H2O2 + O2
+    rate-constant: {A: 3.0e-13, b: 0.0, Ea: -460.0}
+    label: R5
+  - equation: CO => CO2 + HO2
+    kinetic-reactants: {CO: 1, OH: 1}
+    rate-constant: {A: 1.5e-13, b: 0.0, Ea: 0.0}
+    label: R6
+  - equation: HO2 + NO => NO2 + OH
+    rate-constant: {A: 3.5e-12, b: 0.0, Ea: -250.0}
+    label: R7
+  - equation: HO2 + O3 => OH + 2 O2
+    rate-constant: {A: 1.0e-14, b: 0.0, Ea: 715.0}
+    label: R8
+  - equation: OH + O3 => HO2 + O2
+    rate-constant: {A: 1.7e-12, b: 0.0, Ea: 940.0}
+    label: R9
+  - equation: VOC + OH => RO2
+    rate-constant: {A: 1.0e-11, b: 0.0, Ea: 0.0}
+    label: R10
+  - equation: RO2 + NO => NO2 + HO2 + HCHO
+    rate-constant: {A: 2.5e-12, b: 0.0, Ea: -300.0}
+    label: R11
+  - equation: RO2 + HO2 => ROOH + O2
+    rate-constant: {A: 3.8e-13, b: 0.0, Ea: -900.0}
+    label: R12
+  - equation: HCHO + OH => CO + HO2
+    rate-constant: {A: 5.5e-12, b: 0.0, Ea: -125.0}
+    label: R13
+  - equation: HCHO => CO + 2 HO2
+    rate-constant: {A: 3.0e-5, b: 0.0, Ea: 0.0}
+    label: R14
+    type: photolysis
